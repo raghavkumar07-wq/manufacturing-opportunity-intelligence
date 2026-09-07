@@ -1,60 +1,105 @@
-import json
+import streamlit as st
+import pandas as pd
 from pathlib import Path
 
-import pandas as pd
-import streamlit as st
+st.set_page_config(
+    page_title="Manufacturing Opportunity Intelligence",
+    page_icon="🏭",
+    layout="wide"
+)
 
-SCHEMES_PATH = Path(__file__).parent / "data" / "schemes.json"
+st.title("🏭 Manufacturing Opportunity Intelligence")
+st.caption("Government schemes, subsidies, grants and funding opportunities for Indian manufacturing.")
 
-st.set_page_config(page_title="Manufacturing Scheme Tracker", layout="wide")
-st.title("🏭 Manufacturing Scheme Tracker")
-st.caption("Auto-updated daily from myScheme.gov.in and other public sources.")
+DATA_FILE = Path("data/schemes.csv")
 
-if not SCHEMES_PATH.exists():
-    st.warning("No data yet. Run the scraper pipeline first (see README).")
-    st.stop()
+if DATA_FILE.exists():
+    df = pd.read_csv(DATA_FILE)
+else:
+    df = pd.DataFrame(columns=[
+        "scheme_name",
+        "ministry",
+        "sector",
+        "state",
+        "benefit",
+        "eligibility",
+        "deadline",
+        "source_url"
+    ])
 
-raw = json.loads(SCHEMES_PATH.read_text())
-df = pd.DataFrame(raw.values())
+# Sidebar
+st.sidebar.header("Filters")
+
+if not df.empty:
+    sectors = ["All"] + sorted(df["sector"].dropna().unique().tolist())
+    selected_sector = st.sidebar.selectbox("Sector", sectors)
+
+    if selected_sector != "All":
+        df = df[df["sector"] == selected_sector]
+
+    search = st.sidebar.text_input(
+        "Search",
+        placeholder="e.g. machinery, MSME, electronics"
+    )
+
+    if search:
+        mask = df.astype(str).apply(
+            lambda row: row.str.contains(search, case=False, na=False).any(),
+            axis=1
+        )
+        df = df[mask]
+
+# KPIs
+c1, c2, c3 = st.columns(3)
+
+c1.metric("Opportunities", len(df))
+c2.metric(
+    "Manufacturing / MSME",
+    len(df[df.astype(str).apply(
+        lambda x: x.str.contains(
+            "manufactur|MSME|industrial",
+            case=False,
+            na=False
+        ).any(),
+        axis=1
+    )]) if not df.empty else 0
+)
+c3.metric(
+    "States / Sources",
+    df["state"].nunique() if "state" in df.columns and not df.empty else 0
+)
+
+st.divider()
 
 if df.empty:
-    st.warning("data/schemes.json is empty. Run the scraper pipeline first.")
-    st.stop()
+    st.info(
+        "No scheme data has been loaded yet. "
+        "The next step will connect this dashboard to government sources."
+    )
+else:
+    st.subheader("Government Opportunities")
 
-# --- Filters ---
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    only_manufacturing = st.checkbox("Manufacturing-relevant only", value=True)
-
-with col2:
-    ministries = sorted(df["ministry"].dropna().unique().tolist())
-    ministry_filter = st.multiselect("Ministry", ministries)
-
-with col3:
-    search = st.text_input("Search scheme name / eligibility")
-
-filtered = df.copy()
-if only_manufacturing and "manufacturing_relevant" in filtered.columns:
-    filtered = filtered[filtered["manufacturing_relevant"] == True]  # noqa: E712
-if ministry_filter:
-    filtered = filtered[filtered["ministry"].isin(ministry_filter)]
-if search:
-    s = search.lower()
-    filtered = filtered[
-        filtered["scheme_name"].str.lower().str.contains(s, na=False)
-        | filtered["eligibility_summary"].str.lower().str.contains(s, na=False)
+    display_columns = [
+        "scheme_name",
+        "ministry",
+        "sector",
+        "state",
+        "benefit",
+        "eligibility",
+        "deadline"
     ]
 
-st.markdown(f"**{len(filtered)}** schemes match your filters (of {len(df)} total collected)")
+    available = [c for c in display_columns if c in df.columns]
 
-for _, row in filtered.sort_values("last_seen", ascending=False).iterrows():
-    with st.expander(f"{row.get('scheme_name', 'Untitled scheme')}  —  {row.get('ministry') or 'Ministry not identified'}"):
-        st.write(f"**Sectors:** {', '.join(row.get('sector_tags') or []) or '—'}")
-        st.write(f"**Eligibility:** {row.get('eligibility_summary', '—')}")
-        st.write(f"**Benefit:** {row.get('benefit_summary', '—')}")
-        st.write(f"**Deadline:** {row.get('deadline') or 'Ongoing / not specified'}")
-        st.write(f"**Confidence in extraction:** {row.get('confidence', '—')}")
-        if row.get("url"):
-            st.markdown(f"[Open official page]({row['url']})")
-        st.caption(f"Last checked: {row.get('last_seen', '—')}")
+    st.dataframe(
+        df[available],
+        use_container_width=True,
+        hide_index=True
+    )
+
+st.divider()
+
+st.caption(
+    "Data is collected from public government sources. "
+    "Always verify eligibility and deadlines on the official source."
+)
