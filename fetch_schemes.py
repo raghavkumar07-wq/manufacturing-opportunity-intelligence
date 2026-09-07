@@ -5,7 +5,7 @@ from pathlib import Path
 from urllib.parse import urljoin
 import re
 
-BASE_URL = "https://www.myscheme.gov.in"
+SOURCE_URL = "https://my.msme.gov.in/mymsme/Scheme.aspx"
 OUTPUT = Path("data/schemes.csv")
 
 HEADERS = {
@@ -13,93 +13,97 @@ HEADERS = {
 }
 
 
-def get_page(url):
-    response = requests.get(url, headers=HEADERS, timeout=30)
-    response.raise_for_status()
-    return response.text
-
-
 def clean(text):
     return re.sub(r"\s+", " ", text).strip()
 
 
-def find_scheme_links(html):
-    soup = BeautifulSoup(html, "html.parser")
+def fetch_scheme_list():
+    response = requests.get(
+        SOURCE_URL,
+        headers=HEADERS,
+        timeout=30
+    )
 
-    links = set()
+    response.raise_for_status()
 
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
+    soup = BeautifulSoup(response.text, "html.parser")
 
-        if "/schemes/" in href:
-            links.add(urljoin(BASE_URL, href))
+    rows = []
 
-    return sorted(links)
+    for tr in soup.find_all("tr"):
+        cells = tr.find_all(["td", "th"])
 
+        if not cells:
+            continue
 
-def extract_scheme(url):
-    try:
-        html = get_page(url)
-        soup = BeautifulSoup(html, "html.parser")
+        scheme_name = clean(cells[0].get_text(" ", strip=True))
 
-        text = clean(soup.get_text(" ", strip=True))
+        if not scheme_name:
+            continue
 
-        title = soup.title.get_text(strip=True) if soup.title else url
+        # Skip table headings
+        if scheme_name.lower() in ["scheme", "schemes", "s.no."]:
+            continue
 
-        return {
-            "scheme_name": title[:250],
-            "ministry": "",
-            "sector": "Manufacturing / MSME",
+        links = tr.find_all("a", href=True)
+
+        source_url = SOURCE_URL
+
+        if links:
+            source_url = urljoin(
+                SOURCE_URL,
+                links[-1]["href"]
+            )
+
+        rows.append({
+            "scheme_name": scheme_name,
+            "ministry": "Ministry of Micro, Small & Medium Enterprises",
+            "sector": "MSME / Manufacturing",
             "state": "India",
             "benefit": "",
-            "eligibility": text[:2000],
+            "eligibility": "",
             "deadline": "",
-            "source_url": url
-        }
+            "source_url": source_url
+        })
 
-    except Exception as e:
-        print(f"Failed: {url} -> {e}")
-        return None
+    return rows
 
 
 def main():
 
-    print("Fetching myScheme...")
+    print("Fetching official MSME scheme list...")
 
-    homepage = get_page(BASE_URL)
+    rows = fetch_scheme_list()
 
-    links = find_scheme_links(homepage)
-
-    print(f"Found {len(links)} scheme links.")
-
-    rows = []
-
-    # Start conservatively.
-    # We will expand this after the first successful run.
-    for url in links[:100]:
-
-        result = extract_scheme(url)
-
-        if result:
-            rows.append(result)
-
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-
-    new_df = pd.DataFrame(rows)
-
-    if OUTPUT.exists():
-        old_df = pd.read_csv(OUTPUT)
-        final_df = pd.concat([old_df, new_df], ignore_index=True)
-        final_df = final_df.drop_duplicates(
-            subset=["source_url"],
-            keep="last"
+    if not rows:
+        raise RuntimeError(
+            "No schemes were found on the official MSME source."
         )
-    else:
-        final_df = new_df
 
-    final_df.to_csv(OUTPUT, index=False)
+    df = pd.DataFrame(rows)
 
-    print(f"Saved {len(final_df)} schemes.")
+    # Remove duplicates
+    df = df.drop_duplicates(
+        subset=["scheme_name"],
+        keep="first"
+    )
+
+    OUTPUT.parent.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    df.to_csv(
+        OUTPUT,
+        index=False
+    )
+
+    print(f"Successfully collected {len(df)} schemes.")
+
+    print("\nSchemes found:")
+
+    for name in df["scheme_name"].head(20):
+        print("-", name)
 
 
 if __name__ == "__main__":
